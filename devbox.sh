@@ -52,12 +52,20 @@ fi
 docker start "$NAME" >/dev/null
 
 # Install Claude Code once (it is stored in the home volume, so it persists)
-# and alias "claude" to always run with --dangerously-skip-permissions
+# and alias "claude" to always run with --dangerously-skip-permissions,
+# plus a global CLAUDE.md telling it not to touch resource limits
 if [[ "$CLAUDE" == "1" ]]; then
   docker exec "$NAME" bash -c '
     command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
     ALIAS="alias claude=\"claude --dangerously-skip-permissions\""
     grep -qxF "$ALIAS" ~/.bashrc 2>/dev/null || echo "$ALIAS" >> ~/.bashrc
+    mkdir -p ~/.claude
+    grep -q "resource-limited Docker container" ~/.claude/CLAUDE.md 2>/dev/null || cat >> ~/.claude/CLAUDE.md <<EOF
+You are running inside a resource-limited Docker container on a shared server.
+Do not try to change cgroup settings, resource limits, kernel parameters, or
+anything under /sys or /proc. If something is too slow or blocked, tell me
+instead of working around it.
+EOF
   '
 fi
 
