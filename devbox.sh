@@ -6,7 +6,7 @@ set -euo pipefail
 
 # Resource limits (applied when the container is first created;
 # to change them later: docker rm -f devbox-$USER, then run again)
-CPUS="${CPUS:-16}"
+CPUSET="${CPUSET:-0-15}"   # which host cores the container may use
 MEMORY="${MEMORY:-64g}"
 PIDS="${PIDS:-4096}"
 
@@ -42,7 +42,7 @@ if ! docker container inspect "$NAME" >/dev/null 2>&1; then
   # All data lives in the container and Docker volumes, not in host directories.
   # Never add --privileged or mount /var/run/docker.sock here
   docker run -d --name "$NAME" \
-    --cpus="$CPUS" --memory="$MEMORY" --pids-limit="$PIDS" \
+    --cpuset-cpus="$CPUSET" --memory="$MEMORY" --pids-limit="$PIDS" \
     -v "devbox-work-${USER}":/workspace \
     -v "devbox-home-${USER}":/home/dev \
     "$IMAGE" sleep infinity >/dev/null
