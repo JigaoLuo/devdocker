@@ -1,17 +1,36 @@
 #!/usr/bin/env bash
-# Run from anywhere (nothing on the host is mounted):
-#   ./devbox.sh          open a shell in the container
-#   ./devbox.sh <cmd>    run a command in the container
+# Run from anywhere (only $DEVBOX_DIR on the host is mounted, see below):
+#   ./devbox.sh          open an interactive shell in the container
+# Running a command directly (./devbox.sh <cmd>) is intentionally not
+# supported: open the shell and work from there.
 set -euo pipefail
 
+if [[ $# -gt 0 ]]; then
+  echo "usage: $0   (takes no arguments; run your command inside the shell)" >&2
+  exit 1
+fi
+
 # Resource limits (applied when the container is first created;
-# to change them later: docker rm -f devbox-$USER, then run again)
+# to change them later: docker rm -f devbox-$USER, then run again;
+# your files in $DEVBOX_DIR are kept)
 CPUSET="${CPUSET:-0-15}"   # which host cores the container may use
-MEMORY="${MEMORY:-64g}"
+MEMORY="${MEMORY:-64g}"    # RAM limit; swap is disabled (--memory-swap = MEMORY),
+                           # so going over gets OOM-killed instead of swapping on the host
 PIDS="${PIDS:-4096}"
 
 # Claude Code (1 = install it in the container, 0 = don't)
 CLAUDE="${CLAUDE:-1}"
+
+# Where the container's data lives on the host (your own home, so it uses
+# /home and your user's space instead of Docker's storage on /):
+#   $DEVBOX_DIR/work -> /workspace     $DEVBOX_DIR/home -> /home/dev
+# Must be a dedicated directory. Never point this at $HOME itself: the
+# container (and Claude, with sudo) could then edit ~/.ssh, ~/.bashrc, ...
+DEVBOX_DIR="${DEVBOX_DIR:-$HOME/devbox}"
+if [[ "$(realpath -m "$DEVBOX_DIR")" == "$(realpath -m "$HOME")" ]]; then
+  echo "DEVBOX_DIR must not be \$HOME itself" >&2; exit 1
+fi
+mkdir -p "$DEVBOX_DIR/work" "$DEVBOX_DIR/home"
 
 IMAGE="devbox:${USER}"
 
@@ -39,19 +58,26 @@ NAME="devbox-${USER}"
 
 # Create the container once and keep it (software you install stays)
 if ! docker container inspect "$NAME" >/dev/null 2>&1; then
-  # All data lives in the container and Docker volumes, not in host directories.
+  # Data lives in $DEVBOX_DIR (bind mounts); nothing else from the host is mounted.
   # Never add --privileged or mount /var/run/docker.sock here
-  docker run -d --name "$NAME" \
-    --cpuset-cpus="$CPUSET" --memory="$MEMORY" --pids-limit="$PIDS" \
-    -v "devbox-work-${USER}":/workspace \
-    -v "devbox-home-${USER}":/home/dev \
+  # --init: run a tiny init (tini) as PID 1 so orphaned processes get reaped
+  # instead of piling up as zombies against --pids-limit
+  docker run -d --init --name "$NAME" \
+    --cpuset-cpus="$CPUSET" --memory="$MEMORY" --memory-swap="$MEMORY" \
+    --pids-limit="$PIDS" \
+    -v "$DEVBOX_DIR/work":/workspace \
+    -v "$DEVBOX_DIR/home":/home/dev \
     "$IMAGE" sleep infinity >/dev/null
 fi
 
 # Start it again if it was stopped (e.g. after a server reboot)
 docker start "$NAME" >/dev/null
 
-# Install Claude Code once (it is stored in the home volume, so it persists)
+# A bind mount starts empty (unlike a named volume, Docker does not copy the
+# image's /home/dev into it), so seed the default .bashrc/.profile once
+docker exec "$NAME" bash -c '[[ -e ~/.bashrc ]] || cp -r /etc/skel/. ~'
+
+# Install Claude Code once (it is stored in $DEVBOX_DIR/home, so it persists)
 # and alias "claude" to always run with --dangerously-skip-permissions,
 # plus a global CLAUDE.md telling it not to touch resource limits
 if [[ "$CLAUDE" == "1" ]]; then
@@ -69,5 +95,4 @@ EOF
   '
 fi
 
-if [[ $# -gt 0 ]]; then CMD=("$@"); else CMD=(bash); fi
-docker exec -it "$NAME" "${CMD[@]}"
+docker exec -it "$NAME" bash
